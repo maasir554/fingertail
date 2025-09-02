@@ -105,6 +105,16 @@ export class BehavioralAuthService {
     const keyEvents = data.key_events || [];
     const mouseEvents = data.mouse_events || [];
 
+    // Helper to normalize epoch strings/numbers to milliseconds (number)
+    const toMs = (v?: string | number): number => {
+      if (v === undefined || v === null) return 0;
+      const n = typeof v === 'number' ? v : parseFloat(String(v));
+      if (!Number.isFinite(n)) return 0;
+      // If value looks like seconds (around 1e9), convert to ms
+      if (n < 1e12) return n * 1000;
+      return n;
+    };
+
     // Filter out tab events like reference implementation
     const tablessKeyData = keyEvents.filter(event => event.Key !== 'tab');
 
@@ -124,7 +134,7 @@ export class BehavioralAuthService {
       const event = tablessKeyData[i];
       if (!event || event.Event !== 'pressed') continue;
       
-      const keyPressTime = parseFloat(event.Epoch);
+  const keyPressTime = toMs(event.Epoch);
       
       // Find corresponding release event
       let keyReleaseTime = keyPressTime;
@@ -134,8 +144,8 @@ export class BehavioralAuthService {
         const nextEvent = tablessKeyData[j];
         if (!nextEvent || !nextEvent.Key || !nextEvent.Event || !nextEvent.Epoch) continue;
         
-        if (nextEvent.Key === event.Key && nextEvent.Event === 'released') {
-          keyReleaseTime = parseFloat(nextEvent.Epoch);
+          if (nextEvent.Key === event.Key && nextEvent.Event === 'released') {
+          keyReleaseTime = toMs(nextEvent.Epoch);
           const dwellTime = keyReleaseTime - keyPressTime;
           dwellTimes.push(dwellTime);
           break;
@@ -156,15 +166,15 @@ export class BehavioralAuthService {
 
       // Calculate timing relationships like reference
       if (!firstLoop) {
-        prTimes.push(keyReleaseTime - prevKeyPress);
-        ppTimes.push(keyPressTime - prevKeyPress);
-        rrTimes.push(keyReleaseTime - prevKeyRelease);
+  prTimes.push(keyReleaseTime - prevKeyPress);
+  ppTimes.push(keyPressTime - prevKeyPress);
+  rrTimes.push(keyReleaseTime - prevKeyRelease);
       } else {
         firstLoop = false;
       }
 
-      prevKeyPress = keyPressTime;
-      prevKeyRelease = keyReleaseTime;
+  prevKeyPress = keyPressTime;
+  prevKeyRelease = keyReleaseTime;
     }
 
     // Calculate flight times between key releases and next presses
@@ -176,8 +186,8 @@ export class BehavioralAuthService {
         const nextEvent = tablessKeyData[j];
         if (!nextEvent) continue;
         
-        if (nextEvent.Event === 'pressed' && nextEvent.Key !== event.Key) {
-          const flightTime = parseFloat(nextEvent.Epoch) - parseFloat(event.Epoch);
+      if (nextEvent.Event === 'pressed' && nextEvent.Key !== event.Key) {
+        const flightTime = toMs(nextEvent.Epoch) - toMs(event.Epoch);
           flightTimes.push(flightTime);
           break;
         }
@@ -380,56 +390,70 @@ export class BehavioralAuthService {
 
     // Extract features from test data
     const testFeatures = this.extractReferenceFeatures(data);
-    
-    console.log('🧮 Calculating legitimate log-likelihood...');
-    const legitimateLogLikelihood = this.calculateNaiveBayesLogLikelihood(testFeatures, this.legitimateFeatures);
-    console.log('📈 Legitimate log-likelihood:', legitimateLogLikelihood);
-    
-    console.log('🔍 Getting fraudulent features for comparison...');
-    const fraudulentFeatures = this.getFraudulentFeatures();
-    console.log('🧮 Calculating fraudulent log-likelihood...');
-    const fraudulentLogLikelihood = this.calculateNaiveBayesLogLikelihood(testFeatures, fraudulentFeatures);
-    console.log('📉 Fraudulent log-likelihood:', fraudulentLogLikelihood);
 
-    // Use normalized softmax with temperature scaling to prevent extreme values
-    const temperature = 0.1; // Scale down the differences
-    const scaledLegitimate = legitimateLogLikelihood * temperature;
-    const scaledFraudulent = fraudulentLogLikelihood * temperature;
-    
-    const maxLogLikelihood = Math.max(scaledLegitimate, scaledFraudulent);
-    const legitimateExp = Math.exp(scaledLegitimate - maxLogLikelihood);
-    const fraudulentExp = Math.exp(scaledFraudulent - maxLogLikelihood);
-    const totalExp = legitimateExp + fraudulentExp;
-    
-    console.log('🔢 Softmax calculation:', {
-      temperature,
-      scaledLegitimate,
-      scaledFraudulent,
-      maxLogLikelihood,
-      legitimateExp,
-      fraudulentExp,
-      totalExp
-    });
+    // Build class features for comparison
+    let fraudulentFeatures = this.getFraudulentFeatures();
 
-    const legitimateProb = legitimateExp / totalExp;
-    const fraudulentProb = fraudulentExp / totalExp;
-    
-    // Ensure probabilities are reasonable (between 0.1 and 0.9)
-    const minProb = 0.1;
-    const maxProb = 0.9;
-    const adjustedLegitimateProb = Math.max(minProb, Math.min(maxProb, legitimateProb));
-    const adjustedFraudulentProb = 1 - adjustedLegitimateProb;
+    // If fraudulent dataset is too small or missing, synthesize a small negative class
+    // by perturbing the legitimate average features. This prevents degenerate cases
+    // where fraudulentFeatures.length === 0 causes the softmax to always return ~1.0
+    if (!fraudulentFeatures || fraudulentFeatures.length < 3) {
+      console.warn('⚠️ Fraudulent features insufficient (found', fraudulentFeatures?.length || 0, '). Synthesizing negatives for comparison.');
+      const avgLegit = (this.legitimateFeatures && this.legitimateFeatures.length > 0)
+        ? this.calculateAverageFeatures(this.legitimateFeatures)
+        : this.calculateAverageFeatures([]);
+      const synth: ReferenceFeatureVector[] = [];
+      const synthCount = 5;
+      for (let i = 0; i < synthCount; i++) {
+        const noisy = {} as ReferenceFeatureVector;
+        (Object.keys(avgLegit) as (keyof ReferenceFeatureVector)[]).forEach(key => {
+          const base = avgLegit[key] || 0;
+          // relative noise up to ±30%
+          const noise = (Math.random() * 0.6 - 0.3) * (Math.abs(base) + 1);
+          noisy[key] = base + noise;
+        });
+        synth.push(noisy);
+      }
+      fraudulentFeatures = synth;
+    }
 
-    const prediction = adjustedLegitimateProb > 0.5 ? 1 : 0;
-    const confidence = Math.max(adjustedLegitimateProb, adjustedFraudulentProb);
+    console.debug('🔎 Class counts:', { legitimate: this.legitimateFeatures.length, fraudulent: fraudulentFeatures.length });
+
+    // Compute log-likelihoods using per-class Gaussian statistics and include class priors
+    const legitLogLikelihood = this.calculateNaiveBayesLogLikelihood(testFeatures, this.legitimateFeatures);
+    const fraudLogLikelihood = this.calculateNaiveBayesLogLikelihood(testFeatures, fraudulentFeatures);
+
+    // Compute class priors based on available samples (avoid zero priors)
+    const legitCount = Math.max(1, this.legitimateFeatures.length);
+    const fraudCount = Math.max(1, fraudulentFeatures.length);
+    const totalCount = legitCount + fraudCount;
+    const logPriorLegit = Math.log(legitCount / totalCount);
+    const logPriorFraud = Math.log(fraudCount / totalCount);
+
+    const combinedLegit = legitLogLikelihood + logPriorLegit;
+    const combinedFraud = fraudLogLikelihood + logPriorFraud;
+
+    // Softmax in log-space for numerical stability
+    const maxLog = Math.max(combinedLegit, combinedFraud);
+    const legitExp = Math.exp(combinedLegit - maxLog);
+    const fraudExp = Math.exp(combinedFraud - maxLog);
+    const sumExp = legitExp + fraudExp;
+
+    // Probabilities (calibrated). Clamp only to tiny epsilon to avoid exact 0/1.
+    const eps = 1e-6;
+    const legitimateProb = Math.min(1 - eps, Math.max(eps, legitExp / sumExp));
+    const fraudulentProb = Math.min(1 - eps, Math.max(eps, fraudExp / sumExp));
+
+    const prediction = legitimateProb > fraudulentProb ? 1 : 0;
+    const confidence = Math.max(legitimateProb, fraudulentProb);
 
     const result = {
       prediction,
       confidence,
-      legitimateProb: adjustedLegitimateProb,
-      fraudulentProb: adjustedFraudulentProb,
-      legitimateLogLikelihood,
-      fraudulentLogLikelihood,
+      legitimateProb,
+      fraudulentProb,
+      legitimateLogLikelihood: legitLogLikelihood,
+      fraudulentLogLikelihood: fraudLogLikelihood,
       features: testFeatures
     };
 
@@ -439,35 +463,33 @@ export class BehavioralAuthService {
 
   // Calculate Naive Bayes log-likelihood (prevents numerical underflow)
   private calculateNaiveBayesLogLikelihood(testFeatures: ReferenceFeatureVector, classFeatures: ReferenceFeatureVector[]): number {
-    if (classFeatures.length === 0) return -Infinity;
+    // If no class examples available, return a large negative log-likelihood
+    if (!classFeatures || classFeatures.length === 0) return -1e6;
 
     let logLikelihood = 0;
     const featureKeys = Object.keys(testFeatures) as (keyof ReferenceFeatureVector)[];
-    
+
     for (const key of featureKeys) {
       const values = classFeatures.map(f => f[key]);
       const mean = values.reduce((a, b) => a + b, 0) / values.length;
+      // unbiased variance with small smoothing (avoid zero variance)
       let variance = values.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / values.length;
-      
-      // Better variance handling - use relative smoothing based on mean
-      const minVariance = Math.max(0.01, Math.abs(mean) * 0.1);
+      const minVariance = 1e-4 + Math.abs(mean) * 1e-4; // tiny floor relative to mean
       variance = Math.max(variance, minVariance);
-      
-      // Gaussian log probability density function with outlier protection
+
       const testValue = testFeatures[key];
-      const standardizedDiff = Math.abs(testValue - mean) / Math.sqrt(variance);
-      
-      // Cap extreme standardized differences to prevent numerical overflow
-      const cappedDiff = Math.min(standardizedDiff, 10); // Max 10 standard deviations
-      
-      const logProb = -0.5 * Math.log(2 * Math.PI * variance) - 
-                      Math.pow(cappedDiff, 2) / 2;
-      
-      logLikelihood += logProb;
+      // Gaussian log-pdf: -0.5 * ln(2πσ^2) - (x-μ)^2 / (2σ^2)
+      const logProb = -0.5 * Math.log(2 * Math.PI * variance) - Math.pow(testValue - mean, 2) / (2 * variance);
+      // Guard against NaN
+      if (Number.isFinite(logProb)) {
+        logLikelihood += logProb;
+      } else {
+        // If something went wrong for this feature, apply a conservative penalty
+        logLikelihood += -10;
+      }
     }
-    
-    // Cap the total log-likelihood to prevent extreme values
-    return Math.max(logLikelihood, -1000);
+
+    return logLikelihood;
   }
 
   // Get fraudulent features from fraudulent data (using false_data structure)

@@ -424,3 +424,5 @@ For support and questions:
 ---
 
 **Note**: This system is designed for educational and research purposes. For production use, additional security measures and compliance considerations should be implemented.
+
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/maasir554/fingertail?utm_source=oss&utm_medium=github&utm_campaign=maasir554%2Ffingertail&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
