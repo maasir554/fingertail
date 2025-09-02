@@ -1,0 +1,14 @@
+html, body, #root, #__next {
+  height: 100%;
+  overflow-y: auto;
+}
+
+/* Optional: show a thin scrollbar on web */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background-color: rgba(0,0,0,0.2);
+  border-radius: 4px;
+}
